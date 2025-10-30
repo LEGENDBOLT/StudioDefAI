@@ -10,7 +10,8 @@ import FeedbackModal from './components/FeedbackModal';
 import { BrainCircuit, Settings as SettingsIcon, TimerIcon } from 'lucide-react';
 
 const DEFAULT_PRESET: TimerPreset = { id: 'default', name: 'Default', study: 45, rest: 15 };
-const SILENT_AUDIO_URL = 'data:audio/mp3;base64,SUQzBAAAAAABEVRYWFgAAAAtAAADY29tbWVudABCaWdTb3VuZEJhbmsuY29tIC8gTG93bGF0ZW5jeS5vcmcDAAAAAW51bGwAAAACgT3AAAAAAAAAAAAAAD/8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAA='
+// More compatible silent WAV file
+const SILENT_AUDIO_URL = 'data:audio/wav;base64,UklGRjIAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAAAAAAAAAAAA';
 
 const App: React.FC = () => {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -30,6 +31,7 @@ const App: React.FC = () => {
   const [timeLeft, setTimeLeft] = useState(initialDuration);
   const [isActive, setIsActive] = useState(false);
   const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+  const [sessionAwaitingFeedback, setSessionAwaitingFeedback] = useState<Omit<Session, 'notes'> | null>(null);
 
   const timerId = useRef<number | null>(null);
   const deadline = useRef<number | null>(null);
@@ -117,11 +119,19 @@ const App: React.FC = () => {
     showNotification(sessionType);
     
     if (sessionType === 'study') {
-      setShowFeedbackModal(true);
+       const sessionData: Omit<Session, 'notes'> = {
+            id: crypto.randomUUID(),
+            startTime: sessionStartTime.current || new Date().toISOString(),
+            endTime: new Date().toISOString(),
+            type: 'study',
+            duration: Math.round(initialDuration / 60),
+        };
+        setSessionAwaitingFeedback(sessionData);
+        setShowFeedbackModal(true);
     } else {
       handleSessionSwitch('study');
     }
-  }, [sessionType, handleSessionSwitch]);
+  }, [sessionType, handleSessionSwitch, initialDuration]);
   
   const startTimer = useCallback(() => {
     if (timerId.current || timeLeft <= 0) return;
@@ -155,8 +165,6 @@ const App: React.FC = () => {
   }, [activePreset, pauseTimer, sessionType]);
   
   useEffect(() => {
-    // This effect should NOT reset the timer if it's active
-    // It should only reset the initial duration when the preset changes and the timer is NOT running
     if (!isActive) {
         const newDuration = (sessionType === 'study' ? activePreset.study : activePreset.rest) * 60;
         setInitialDuration(newDuration);
@@ -174,17 +182,29 @@ const App: React.FC = () => {
     }
   };
   
-  const handleModalSubmit = (notes: string) => {
-    const session: Session = {
-      id: crypto.randomUUID(),
-      startTime: sessionStartTime.current || new Date().toISOString(),
-      endTime: new Date().toISOString(),
-      type: 'study',
-      duration: Math.round(initialDuration / 60),
-      notes: notes,
+  const handleFeedbackSubmit = (notes: string) => {
+    if (!sessionAwaitingFeedback) return;
+    const completeSession: Session = {
+      ...sessionAwaitingFeedback,
+      notes: notes.trim() || "Nessuna nota per questa sessione.",
     };
-    handleSessionComplete(session);
+    handleSessionComplete(completeSession);
+
     setShowFeedbackModal(false);
+    setSessionAwaitingFeedback(null);
+    handleSessionSwitch('rest');
+  };
+  
+  const handleFeedbackDismiss = () => {
+    if (!sessionAwaitingFeedback) return;
+    const completeSession: Session = {
+      ...sessionAwaitingFeedback,
+      notes: "Nessuna nota fornita.",
+    };
+    handleSessionComplete(completeSession);
+    
+    setShowFeedbackModal(false);
+    setSessionAwaitingFeedback(null);
     handleSessionSwitch('rest');
   };
 
@@ -274,7 +294,7 @@ const App: React.FC = () => {
   const renderView = () => {
     switch (currentView) {
       case 'analysis':
-        return <AnalysisDashboard analyses={analyses} onAnalyze={handleAnalyze} isLoading={isLoading} sessionCount={sessions.length} />;
+        return <AnalysisDashboard analyses={analyses} onAnalyze={handleAnalyze} isLoading={isLoading} sessionCount={sessions.filter(s => s.type === 'study').length} />;
       case 'settings':
         return <Settings
                   sessions={sessions}
@@ -310,10 +330,7 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-gray-900 text-slate-800 dark:text-slate-200 flex flex-col font-sans">
-       {showFeedbackModal && <FeedbackModal onSubmit={handleModalSubmit} onDismiss={() => {
-        setShowFeedbackModal(false);
-        handleSessionSwitch('rest');
-        }} />}
+       {showFeedbackModal && <FeedbackModal onSubmit={handleFeedbackSubmit} onDismiss={handleFeedbackDismiss} />}
       <main className="flex-grow container mx-auto p-4 pb-24 max-w-2xl">
         {error && (
           <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4 rounded-md dark:bg-red-900 dark:text-red-200 dark:border-red-600" role="alert">
@@ -323,7 +340,7 @@ const App: React.FC = () => {
         )}
         {renderView()}
       </main>
-      <BottomNav items={navItems} currentView={currentView} setCurrentView={setCurrentView} />
+      <BottomNav items={navItems} currentView={currentView} setCurrentView={setCurrentView} timerIsActive={isActive} />
     </div>
   );
 };
