@@ -11,6 +11,8 @@ export interface Session {
 
 export interface Analysis {
   date: string;
+  totalStudyDuration: number; // in minutes
+  sessionCount: number;
   concentration: number;
   studyCapacity: number;
   stress: number;

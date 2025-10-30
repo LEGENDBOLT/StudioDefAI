@@ -10,7 +10,7 @@ import FeedbackModal from './components/FeedbackModal';
 import { BrainCircuit, Settings as SettingsIcon, TimerIcon } from 'lucide-react';
 
 const DEFAULT_PRESET: TimerPreset = { id: 'default', name: 'Default', study: 45, rest: 15 };
-const SILENT_AUDIO_URL = 'data:audio/mp3;base64,SUQzBAAAAAABEVRYWFgAAAAtAAADY29tbWVudABCaWdTb3VuZEJhbmsuY29tIC8gTG93bGF0ZW5jeS5vcmcDAAAAAW51bGwAAAACgT3AAAAAAAAAAAAAAD/8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAA='
+const SILENT_AUDIO_URL = 'data:audio/mp3;base64,SUQzBAAAAAABEVRYWFgAAAAtAAADY29tbWVudABCaWdTb3VuZEJhbmsuY29tIC8gTG93bGF0ZW5jeS5vcmcDAAAAAW51bGwAAAACgT3AAAAAAAAAAAAAAD/8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAA='
 
 const App: React.FC = () => {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -100,7 +100,7 @@ const App: React.FC = () => {
   }, [activePreset, pauseTimer]);
   
   const showNotification = (type: SessionType) => {
-    if (document.visibilityState === 'hidden' && 'Notification' in window && Notification.permission === 'granted') {
+    if ('Notification' in window && Notification.permission === 'granted') {
       const title = type === 'study' ? 'Sessione di studio finita!' : 'Pausa finita!';
       const body = type === 'study' ? 'È ora di fare una pausa!' : 'È ora di tornare a studiare!';
       new Notification(title, { body });
@@ -125,6 +125,9 @@ const App: React.FC = () => {
   
   const startTimer = useCallback(() => {
     if (timerId.current || timeLeft <= 0) return;
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
     if (!sessionStartTime.current) {
         sessionStartTime.current = new Date().toISOString();
     }
@@ -152,10 +155,15 @@ const App: React.FC = () => {
   }, [activePreset, pauseTimer, sessionType]);
   
   useEffect(() => {
+    // This effect should NOT reset the timer if it's active
+    // It should only reset the initial duration when the preset changes and the timer is NOT running
     if (!isActive) {
-      resetTimer();
+        const newDuration = (sessionType === 'study' ? activePreset.study : activePreset.rest) * 60;
+        setInitialDuration(newDuration);
+        setTimeLeft(newDuration);
     }
-  }, [activePreset, isActive]);
+  }, [activePreset, sessionType, isActive]);
+
 
   const addFiveMinutes = () => {
     const newTime = timeLeft + 5 * 60;
@@ -226,7 +234,8 @@ const App: React.FC = () => {
   // --- END: Timer Functions ---
 
   const handleAnalyze = useCallback(async () => {
-    if (sessions.length === 0) {
+    const studySessions = sessions.filter(s => s.type === 'study');
+    if (studySessions.length === 0) {
       setError("Hai bisogno di almeno una sessione di studio per l'analisi.");
       setTimeout(() => setError(null), 3000);
       return;
@@ -234,8 +243,15 @@ const App: React.FC = () => {
     setIsLoading(true);
     setError(null);
     try {
-      const newAnalysis = await geminiService.analyzeStudySessions(sessions);
-      setAnalyses(prev => [{...newAnalysis, date: new Date().toISOString() }, ...prev]);
+      const totalDuration = studySessions.reduce((acc, s) => acc + s.duration, 0);
+      const newAnalysisData = await geminiService.analyzeStudySessions(studySessions);
+      const newAnalysis: Analysis = {
+        ...newAnalysisData,
+        date: new Date().toISOString(),
+        totalStudyDuration: Math.round(totalDuration),
+        sessionCount: studySessions.length,
+      };
+      setAnalyses(prev => [newAnalysis, ...prev]);
       setSessions([]); // Clear sessions after analysis
     } catch (err) {
       if (err instanceof Error && err.message === "API_KEY_NOT_FOUND") {

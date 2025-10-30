@@ -73,6 +73,7 @@ const Settings: React.FC<SettingsProps> = ({ sessions, analyses, onImport, prese
   };
   
   const requestNotificationPermission = async () => {
+    if (notificationPermission !== 'default') return;
     const permission = await Notification.requestPermission();
     setNotificationPermission(permission);
   };
@@ -196,6 +197,11 @@ const Settings: React.FC<SettingsProps> = ({ sessions, analyses, onImport, prese
             <Bell size={20} />
            {notificationPermission === 'granted' ? 'Notifiche Abilitate' : notificationPermission === 'denied' ? 'Notifiche Bloccate' : 'Abilita Notifiche'}
          </button>
+         {notificationPermission === 'denied' && (
+            <p className="text-xs text-red-500 dark:text-red-400 text-center">
+                Le notifiche sono bloccate. Devi abilitarle nelle impostazioni del tuo browser per questo sito.
+            </p>
+         )}
       </div>
 
       <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-sm border border-slate-100 dark:border-slate-700 space-y-4">

@@ -1,7 +1,7 @@
 import React from 'react';
 import { Analysis } from '../types';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Lightbulb, BookOpen, Smile, Frown, BrainCircuit } from 'lucide-react';
+import { Lightbulb, BookOpen, Smile, Frown, BrainCircuit, Clock, Calendar } from 'lucide-react';
 
 interface AnalysisDashboardProps {
   analyses: Analysis[];
@@ -9,6 +9,43 @@ interface AnalysisDashboardProps {
   isLoading: boolean;
   sessionCount: number;
 }
+
+const isSameDay = (d1: Date, d2: Date) =>
+  d1.getFullYear() === d2.getFullYear() &&
+  d1.getMonth() === d2.getMonth() &&
+  d1.getDate() === d2.getDate();
+
+const getStartOfWeek = (date: Date) => {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Imposta Lunedì come primo giorno
+  d.setHours(0, 0, 0, 0);
+  return new Date(d.setDate(diff));
+};
+
+const aggregateAnalyses = (analyses: Analysis[]): { totalTime: number; count: number } => {
+    if (analyses.length === 0) return { totalTime: 0, count: 0 };
+    const totalTime = analyses.reduce((sum, a) => sum + a.totalStudyDuration, 0);
+    return { totalTime, count: analyses.length };
+};
+
+const SummaryCard: React.FC<{ title: string; value: string; change?: number; icon: React.ReactNode }> = ({ title, value, change, icon }) => (
+    <div className="bg-white dark:bg-slate-800 p-4 rounded-xl shadow-sm flex items-start space-x-4">
+        <div className="p-3 rounded-full bg-blue-100 dark:bg-blue-900/50 text-blue-500">
+            {icon}
+        </div>
+        <div>
+            <p className="text-sm text-slate-500 dark:text-slate-400">{title}</p>
+            <p className="text-2xl font-bold text-slate-800 dark:text-slate-100">{value}</p>
+            {change !== undefined && (
+                <p className={`text-xs font-medium ${change >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+                    {change >= 0 ? `+${change}` : change} min vs settimana scorsa
+                </p>
+            )}
+        </div>
+    </div>
+);
+
 
 const MetricCard: React.FC<{ title: string; value: number; icon: React.ReactNode }> = ({ title, value, icon }) => {
     const getColor = (value: number) => {
@@ -32,6 +69,26 @@ const MetricCard: React.FC<{ title: string; value: number; icon: React.ReactNode
 
 const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ analyses, onAnalyze, isLoading, sessionCount }) => {
   const latestAnalysis = analyses[0];
+
+  const now = new Date();
+  const todayAnalyses = analyses.filter(a => isSameDay(new Date(a.date), now));
+  const todaySummary = aggregateAnalyses(todayAnalyses);
+
+  const startOfThisWeek = getStartOfWeek(now);
+  const startOfLastWeek = new Date(startOfThisWeek);
+  startOfLastWeek.setDate(startOfLastWeek.getDate() - 7);
+
+  const thisWeekAnalyses = analyses.filter(a => new Date(a.date) >= startOfThisWeek);
+  const thisWeekSummary = aggregateAnalyses(thisWeekAnalyses);
+
+  const lastWeekAnalyses = analyses.filter(a => {
+      const d = new Date(a.date);
+      return d >= startOfLastWeek && d < startOfThisWeek;
+  });
+  const lastWeekSummary = aggregateAnalyses(lastWeekAnalyses);
+
+  const weeklyTimeChange = thisWeekSummary.totalTime - lastWeekSummary.totalTime;
+
   const chartData = [...analyses].reverse().map(a => ({
     date: new Date(a.date).toLocaleDateString('it-IT', { month: 'short', day: 'numeric' }),
     Concentrazione: a.concentration,
@@ -44,6 +101,11 @@ const AnalysisDashboard: React.FC<AnalysisDashboardProps> = ({ analyses, onAnaly
       <div className="text-center">
         <h1 className="text-3xl font-extrabold text-slate-800 dark:text-slate-100 tracking-tight">Analisi Produttività AI</h1>
         <p className="text-slate-500 dark:text-slate-400 mt-2">Scopri insight sulle tue abitudini di studio e benessere.</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <SummaryCard title="Studio Oggi" value={`${todaySummary.totalTime} min`} icon={<Clock size={24}/>} />
+          <SummaryCard title="Questa Settimana" value={`${thisWeekSummary.totalTime} min`} change={weeklyTimeChange} icon={<Calendar size={24}/>} />
       </div>
       
       <div className="bg-white dark:bg-slate-800 p-6 rounded-2xl shadow-lg border border-slate-100 dark:border-slate-700">
