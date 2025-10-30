@@ -1,12 +1,16 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Session, Analysis, View, TimerPreset, Theme } from './types';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { Session, Analysis, View, TimerPreset, Theme, SessionType } from './types';
 import * as storageService from './services/storageService';
 import * as geminiService from './services/geminiService';
 import Timer from './components/Timer';
 import AnalysisDashboard from './components/AnalysisDashboard';
 import Settings from './components/Settings';
 import BottomNav from './components/BottomNav';
+import FeedbackModal from './components/FeedbackModal';
 import { BrainCircuit, Settings as SettingsIcon, TimerIcon } from 'lucide-react';
+
+const DEFAULT_PRESET: TimerPreset = { id: 'default', name: 'Default', study: 45, rest: 15 };
+const SILENT_AUDIO_URL = 'data:audio/mp3;base64,SUQzBAAAAAABEVRYWFgAAAAtAAADY29tbWVudABCaWdTb3VuZEJhbmsuY29tIC8gTG93bGF0ZW5jeS5vcmcDAAAAAW51bGwAAAACgT3AAAAAAAAAAAAAAD/8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAAAP8MAAAAAAA='
 
 const App: React.FC = () => {
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -18,56 +22,208 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const activePreset = presets.find(p => p.id === activePresetId) || presets[0] || DEFAULT_PRESET;
+
+  // --- START: Timer State & Logic (lifted from Timer.tsx) ---
+  const [sessionType, setSessionType] = useState<SessionType>('study');
+  const [initialDuration, setInitialDuration] = useState(activePreset.study * 60);
+  const [timeLeft, setTimeLeft] = useState(initialDuration);
+  const [isActive, setIsActive] = useState(false);
+  const [showFeedbackModal, setShowFeedbackModal] = useState(false);
+
+  const timerId = useRef<number | null>(null);
+  const deadline = useRef<number | null>(null);
+  const sessionStartTime = useRef<string | null>(null);
+  const completionAudioRef = useRef<HTMLAudioElement | null>(null);
+  const silentAudioRef = useRef<HTMLAudioElement | null>(null);
+  // --- END: Timer State & Logic ---
+
   useEffect(() => {
     setSessions(storageService.loadSessions());
     setAnalyses(storageService.loadAnalyses());
     const loadedPresets = storageService.loadPresets();
     setPresets(loadedPresets);
     const loadedActiveId = storageService.loadActivePresetId();
-    // If no active ID is set, or if the active preset was deleted, set the first preset as active.
     if (loadedActiveId && loadedPresets.some(p => p.id === loadedActiveId)) {
         setActivePresetId(loadedActiveId);
     } else if (loadedPresets.length > 0) {
         setActivePresetId(loadedPresets[0].id);
     }
+    // Initialize audio elements
+    completionAudioRef.current = new Audio('https://interactive-examples.mdn.mozilla.net/media/cc0-audio/t-rex-roar.mp3');
+    silentAudioRef.current = new Audio(SILENT_AUDIO_URL);
+    silentAudioRef.current.loop = true;
   }, []);
 
-  useEffect(() => {
-    storageService.saveSessions(sessions);
-  }, [sessions]);
-
-  useEffect(() => {
-    storageService.saveAnalyses(analyses);
-  }, [analyses]);
-
-  useEffect(() => {
-    storageService.savePresets(presets);
-    storageService.saveActivePresetId(activePresetId);
-  }, [presets, activePresetId]);
+  useEffect(() => { storageService.saveSessions(sessions); }, [sessions]);
+  useEffect(() => { storageService.saveAnalyses(analyses); }, [analyses]);
+  useEffect(() => { storageService.savePresets(presets); storageService.saveActivePresetId(activePresetId); }, [presets, activePresetId]);
   
   useEffect(() => {
     const root = window.document.documentElement;
-    const isDark =
-      theme === 'dark' ||
-      (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
-
+    const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
     root.classList.toggle('dark', isDark);
     storageService.saveTheme(theme);
-    
     const mediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
-    const handleChange = () => {
-        if (theme === 'system') {
-           root.classList.toggle('dark', mediaQuery.matches);
-        }
-    };
+    const handleChange = () => { if (theme === 'system') { root.classList.toggle('dark', mediaQuery.matches); } };
     mediaQuery.addEventListener('change', handleChange);
     return () => mediaQuery.removeEventListener('change', handleChange);
   }, [theme]);
 
-
+  // --- START: Timer Functions ---
   const handleSessionComplete = (session: Session) => {
     setSessions(prev => [...prev, session]);
   };
+
+  const formatTime = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  };
+
+  const pauseTimer = useCallback(() => {
+    setIsActive(false);
+    silentAudioRef.current?.pause();
+    if (timerId.current) {
+      clearInterval(timerId.current);
+      timerId.current = null;
+    }
+  }, []);
+  
+  const handleSessionSwitch = useCallback((newType: SessionType, shouldPause = true) => {
+    if (shouldPause) pauseTimer();
+    const newDuration = (newType === 'study' ? activePreset.study : activePreset.rest) * 60;
+    setSessionType(newType);
+    setInitialDuration(newDuration);
+    setTimeLeft(newDuration);
+    sessionStartTime.current = null;
+  }, [activePreset, pauseTimer]);
+  
+  const showNotification = (type: SessionType) => {
+    if (document.visibilityState === 'hidden' && 'Notification' in window && Notification.permission === 'granted') {
+      const title = type === 'study' ? 'Sessione di studio finita!' : 'Pausa finita!';
+      const body = type === 'study' ? 'È ora di fare una pausa!' : 'È ora di tornare a studiare!';
+      new Notification(title, { body });
+    }
+  };
+
+  const handleTimerCompletion = useCallback(() => {
+    if (timerId.current) clearInterval(timerId.current);
+    timerId.current = null;
+    setIsActive(false);
+    silentAudioRef.current?.pause();
+    
+    completionAudioRef.current?.play().catch(e => console.log("Riproduzione audio fallita:", e));
+    showNotification(sessionType);
+    
+    if (sessionType === 'study') {
+      setShowFeedbackModal(true);
+    } else {
+      handleSessionSwitch('study');
+    }
+  }, [sessionType, handleSessionSwitch]);
+  
+  const startTimer = useCallback(() => {
+    if (timerId.current || timeLeft <= 0) return;
+    if (!sessionStartTime.current) {
+        sessionStartTime.current = new Date().toISOString();
+    }
+    setIsActive(true);
+    silentAudioRef.current?.play().catch(e => console.error("Riproduzione audio silenzioso fallita:", e));
+    deadline.current = Date.now() + timeLeft * 1000;
+    
+    timerId.current = window.setInterval(() => {
+      const newTimeLeft = Math.round((deadline.current! - Date.now()) / 1000);
+      if (newTimeLeft <= 0) {
+        setTimeLeft(0);
+        handleTimerCompletion();
+      } else {
+        setTimeLeft(newTimeLeft);
+      }
+    }, 1000);
+  }, [timeLeft, handleTimerCompletion]);
+  
+  const resetTimer = useCallback(() => {
+    pauseTimer();
+    const newDuration = (sessionType === 'study' ? activePreset.study : activePreset.rest) * 60;
+    setInitialDuration(newDuration);
+    setTimeLeft(newDuration);
+    sessionStartTime.current = null;
+  }, [activePreset, pauseTimer, sessionType]);
+  
+  useEffect(() => {
+    if (!isActive) {
+      resetTimer();
+    }
+  }, [activePreset, isActive]);
+
+  const addFiveMinutes = () => {
+    const newTime = timeLeft + 5 * 60;
+    setTimeLeft(newTime);
+    setInitialDuration(prev => prev + 5 * 60);
+    if (isActive && deadline.current) {
+      deadline.current += 5 * 60 * 1000;
+    }
+  };
+  
+  const handleModalSubmit = (notes: string) => {
+    const session: Session = {
+      id: crypto.randomUUID(),
+      startTime: sessionStartTime.current || new Date().toISOString(),
+      endTime: new Date().toISOString(),
+      type: 'study',
+      duration: Math.round(initialDuration / 60),
+      notes: notes,
+    };
+    handleSessionComplete(session);
+    setShowFeedbackModal(false);
+    handleSessionSwitch('rest');
+  };
+
+  // Effect for document title and Media Session Metadata
+  useEffect(() => {
+    if (isActive) {
+        document.title = `${formatTime(timeLeft)} - ${sessionType === 'study' ? 'Studio' : 'Pausa'}`;
+    } else {
+        document.title = 'FocusFlow AI';
+    }
+
+    if ('mediaSession' in navigator) {
+        if (isActive) {
+            navigator.mediaSession.metadata = new MediaMetadata({
+                title: `Sessione di ${sessionType === 'study' ? 'Studio' : 'Pausa'}`,
+                artist: formatTime(timeLeft),
+                album: 'FocusFlow AI',
+                artwork: [{ src: 'vite.svg', type: 'image/svg+xml' }]
+            });
+            navigator.mediaSession.playbackState = 'playing';
+        } else {
+            navigator.mediaSession.metadata = null;
+            navigator.mediaSession.playbackState = 'paused';
+        }
+    }
+    return () => { document.title = 'FocusFlow AI'; };
+  }, [timeLeft, isActive, sessionType]);
+
+  // Effect for Media Session Action Handlers
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+
+    navigator.mediaSession.setActionHandler('play', startTimer);
+    navigator.mediaSession.setActionHandler('pause', pauseTimer);
+    navigator.mediaSession.setActionHandler('stop', pauseTimer);
+    const nextSessionType = sessionType === 'study' ? 'rest' : 'study';
+    navigator.mediaSession.setActionHandler('nexttrack', () => handleSessionSwitch(nextSessionType, false));
+    navigator.mediaSession.setActionHandler('previoustrack', () => handleSessionSwitch(sessionType, false));
+
+    return () => {
+        ['play', 'pause', 'stop', 'nexttrack', 'previoustrack'].forEach(action => {
+             try { navigator.mediaSession.setActionHandler(action as MediaSessionAction, null); } catch(e) {/* ignored */}
+        });
+    };
+  }, [startTimer, pauseTimer, sessionType, handleSessionSwitch]);
+
+  // --- END: Timer Functions ---
 
   const handleAnalyze = useCallback(async () => {
     if (sessions.length === 0) {
@@ -99,8 +255,6 @@ const App: React.FC = () => {
     alert('Dati importati con successo!');
   };
 
-  const activePreset = presets.find(p => p.id === activePresetId) || presets[0];
-
   const renderView = () => {
     switch (currentView) {
       case 'analysis':
@@ -119,7 +273,16 @@ const App: React.FC = () => {
                 />;
       case 'timer':
       default:
-        return <Timer onSessionComplete={handleSessionComplete} activePreset={activePreset} />;
+        return <Timer 
+                  timeLeft={timeLeft}
+                  initialDuration={initialDuration}
+                  sessionType={sessionType}
+                  isActive={isActive}
+                  startTimer={startTimer}
+                  pauseTimer={pauseTimer}
+                  resetTimer={resetTimer}
+                  addFiveMinutes={addFiveMinutes}
+                />;
     }
   };
 
@@ -131,6 +294,10 @@ const App: React.FC = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-gray-900 text-slate-800 dark:text-slate-200 flex flex-col font-sans">
+       {showFeedbackModal && <FeedbackModal onSubmit={handleModalSubmit} onDismiss={() => {
+        setShowFeedbackModal(false);
+        handleSessionSwitch('rest');
+        }} />}
       <main className="flex-grow container mx-auto p-4 pb-24 max-w-2xl">
         {error && (
           <div className="bg-red-100 border-l-4 border-red-500 text-red-700 p-4 mb-4 rounded-md dark:bg-red-900 dark:text-red-200 dark:border-red-600" role="alert">

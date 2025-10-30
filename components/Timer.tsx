@@ -1,132 +1,28 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import type { Session, SessionType, TimerPreset } from '../types';
-import FeedbackModal from './FeedbackModal';
+import React from 'react';
+import type { SessionType } from '../types';
 import { Play, Pause, RotateCcw, Plus } from 'lucide-react';
 
 interface TimerProps {
-  onSessionComplete: (session: Session) => void;
-  activePreset: TimerPreset | undefined;
+  timeLeft: number;
+  initialDuration: number;
+  sessionType: SessionType;
+  isActive: boolean;
+  startTimer: () => void;
+  pauseTimer: () => void;
+  resetTimer: () => void;
+  addFiveMinutes: () => void;
 }
 
-const DEFAULT_PRESET: TimerPreset = { id: 'default', name: 'Default', study: 45, rest: 15 };
-
-const Timer: React.FC<TimerProps> = ({ onSessionComplete, activePreset }) => {
-  const currentPreset = activePreset || DEFAULT_PRESET;
-  const [sessionType, setSessionType] = useState<SessionType>('study');
-  const [initialDuration, setInitialDuration] = useState(currentPreset.study * 60);
-  const [timeLeft, setTimeLeft] = useState(initialDuration);
-  const [isActive, setIsActive] = useState(false);
-  const [showModal, setShowModal] = useState(false);
-  
-  const timerId = useRef<number | null>(null);
-  const deadline = useRef<number | null>(null);
-  const sessionStartTime = useRef<string | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
-
-  useEffect(() => {
-    audioRef.current = new Audio('https://interactive-examples.mdn.mozilla.net/media/cc0-audio/t-rex-roar.mp3');
-  }, []);
-
-  useEffect(() => {
-    if (!isActive) {
-      handleSessionSwitch(sessionType, false);
-    }
-  }, [activePreset]);
-
-  const showNotification = (type: SessionType) => {
-    if (document.visibilityState === 'hidden' && 'Notification' in window && Notification.permission === 'granted') {
-      const title = type === 'study' ? 'Sessione di studio finita!' : 'Pausa finita!';
-      const body = type === 'study' ? 'È ora di fare una pausa!' : 'È ora di tornare a studiare!';
-      new Notification(title, { body });
-    }
-  };
-
-  const handleTimerCompletion = useCallback(() => {
-    if (timerId.current) clearInterval(timerId.current);
-    timerId.current = null;
-    setIsActive(false);
-    
-    audioRef.current?.play().catch(e => console.log("Riproduzione audio fallita:", e));
-    showNotification(sessionType);
-    
-    if (sessionType === 'study') {
-      setShowModal(true);
-    } else {
-      handleSessionSwitch('study');
-    }
-  }, [sessionType]);
-
-  const startTimer = useCallback(() => {
-    if (timerId.current || timeLeft <= 0) return;
-    if (!sessionStartTime.current) {
-        sessionStartTime.current = new Date().toISOString();
-    }
-    setIsActive(true);
-    deadline.current = Date.now() + timeLeft * 1000;
-    
-    timerId.current = window.setInterval(() => {
-      const newTimeLeft = Math.round((deadline.current! - Date.now()) / 1000);
-      if (newTimeLeft <= 0) {
-        setTimeLeft(0);
-        handleTimerCompletion();
-      } else {
-        setTimeLeft(newTimeLeft);
-      }
-    }, 1000);
-  }, [timeLeft, handleTimerCompletion]);
-
-  const pauseTimer = useCallback(() => {
-    setIsActive(false);
-    if (timerId.current) {
-      clearInterval(timerId.current);
-      timerId.current = null;
-    }
-  }, []);
-
-  const resetTimer = useCallback(() => {
-    pauseTimer();
-    setTimeLeft(initialDuration);
-    sessionStartTime.current = null;
-  }, [initialDuration, pauseTimer]);
-  
-  const handleSessionSwitch = useCallback((newType: SessionType, shouldPause = true) => {
-    if (shouldPause) pauseTimer();
-    const newDuration = (newType === 'study' ? currentPreset.study : currentPreset.rest) * 60;
-    setSessionType(newType);
-    setInitialDuration(newDuration);
-    setTimeLeft(newDuration);
-    sessionStartTime.current = null;
-  }, [currentPreset, pauseTimer]);
-
-  const addFiveMinutes = () => {
-    const newTimeLeft = timeLeft + 5 * 60;
-    setTimeLeft(newTimeLeft);
-    setInitialDuration(prev => prev + 5 * 60);
-    if (isActive && deadline.current) {
-      deadline.current += 5 * 60 * 1000;
-    }
-  };
-  
-  useEffect(() => {
-    return () => {
-      if(timerId.current) clearInterval(timerId.current)
-    };
-  }, []);
-
-  const handleModalSubmit = (notes: string) => {
-    const session: Session = {
-      id: crypto.randomUUID(),
-      startTime: sessionStartTime.current || new Date().toISOString(),
-      endTime: new Date().toISOString(),
-      type: 'study',
-      duration: Math.round(initialDuration / 60),
-      notes: notes,
-    };
-    onSessionComplete(session);
-    setShowModal(false);
-    handleSessionSwitch('rest');
-  };
-
+const Timer: React.FC<TimerProps> = ({ 
+  timeLeft, 
+  initialDuration, 
+  sessionType, 
+  isActive, 
+  startTimer, 
+  pauseTimer, 
+  resetTimer, 
+  addFiveMinutes 
+}) => {
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
@@ -138,11 +34,6 @@ const Timer: React.FC<TimerProps> = ({ onSessionComplete, activePreset }) => {
 
   return (
     <div className="flex flex-col items-center justify-center text-center p-4">
-      {showModal && <FeedbackModal onSubmit={handleModalSubmit} onDismiss={() => {
-        setShowModal(false);
-        handleSessionSwitch('rest');
-        }} />}
-
       <h1 className="text-2xl font-bold text-slate-700 dark:text-slate-200 mb-2 capitalize">
         Sessione di {sessionType === 'study' ? 'Studio' : 'Pausa'}
       </h1>
